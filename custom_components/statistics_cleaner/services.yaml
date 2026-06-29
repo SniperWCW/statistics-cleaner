@@ -33,7 +33,7 @@ scan_outliers:
           mode: box
     window_hours:
       name: Time window
-      description: Time range to inspect, in hours.
+      description: Time range to inspect, in hours. Ignored when start_at is provided.
       example: 24
       default: 24
       selector:
@@ -42,6 +42,16 @@ scan_outliers:
           max: 8760
           step: 1
           mode: box
+    start_at:
+      name: Start time
+      description: Optional ISO start date or datetime, for example 2026-06-15 or 2026-06-15T03:00:00+00:00.
+      selector:
+        text:
+    end_at:
+      name: End time
+      description: Optional ISO end date or datetime, for example 2026-06-19 or 2026-06-19T23:59:59+00:00.
+      selector:
+        text:
 
 apply_preview:
   name: Apply preview

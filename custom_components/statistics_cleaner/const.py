@@ -10,6 +10,8 @@ CONF_THRESHOLD = "threshold"
 CONF_WINDOW_HOURS = "window_hours"
 CONF_NAME = "name"
 CONF_DB_PATH = "db_path"
+CONF_START_AT = "start_at"
+CONF_END_AT = "end_at"
 
 DEFAULT_NAME = "Statistics Cleaner"
 DEFAULT_THRESHOLD = 0.15

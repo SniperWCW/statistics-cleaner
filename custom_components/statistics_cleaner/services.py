@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 
 import voluptuous as vol
@@ -17,7 +18,9 @@ from .const import (
     ATTR_ENTRY_ID,
     ATTR_SCAN_RESULT,
     CONF_DB_PATH,
+    CONF_END_AT,
     CONF_ENTITY_ID,
+    CONF_START_AT,
     CONF_THRESHOLD,
     CONF_WINDOW_HOURS,
     DEFAULT_DB_PATH,
@@ -37,6 +40,8 @@ SCAN_SCHEMA = vol.Schema(
         vol.Optional(CONF_DB_PATH): cv.string,
         vol.Optional(CONF_THRESHOLD): vol.Coerce(float),
         vol.Optional(CONF_WINDOW_HOURS): vol.Coerce(int),
+        vol.Optional(CONF_START_AT): cv.string,
+        vol.Optional(CONF_END_AT): cv.string,
     }
 )
 
@@ -65,6 +70,8 @@ async def async_register_services(hass: HomeAssistant) -> None:
             or entry.data.get(CONF_ENTITY_ID)
         )
         database_path = _resolve_database_path(hass, entry, call.data.get(CONF_DB_PATH))
+        start_at = _parse_datetime(call.data.get(CONF_START_AT), CONF_START_AT)
+        end_at = _parse_datetime(call.data.get(CONF_END_AT), CONF_END_AT)
         threshold = _resolve_number_option(
             entry,
             call.data.get(CONF_THRESHOLD),
@@ -89,6 +96,8 @@ async def async_register_services(hass: HomeAssistant) -> None:
             threshold=threshold,
             window_hours=window_hours,
             database_path=database_path,
+            start_at=start_at,
+            end_at=end_at,
         )
         _LOGGER.info(
             "Scan completed for %s with %s candidate(s)",
@@ -191,3 +200,29 @@ def _resolve_number_option(entry, override_value, key: str, fallback):
     if key in entry.data:
         return entry.data[key]
     return fallback
+
+
+def _parse_datetime(value: str | None, field_name: str) -> datetime | None:
+    """Parse an ISO date or datetime string to UTC."""
+    if value is None:
+        return None
+
+    normalized = value.strip()
+    if not normalized:
+        return None
+
+    try:
+        if len(normalized) == 10:
+            parsed = datetime.fromisoformat(f"{normalized}T00:00:00")
+        else:
+            parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+    except ValueError as err:
+        raise ServiceValidationError(
+            f"Invalid {field_name}. Use ISO format like 2026-06-15 or 2026-06-15T03:00:00+00:00."
+        ) from err
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    else:
+        parsed = parsed.astimezone(UTC)
+    return parsed

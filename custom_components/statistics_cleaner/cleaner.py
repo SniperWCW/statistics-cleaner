@@ -61,6 +61,8 @@ class StatisticsCleaner:
         threshold: float,
         window_hours: int,
         database_path: Path,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
     ) -> ScanResult:
         """Scan SQLite statistics rows and persist a preview."""
         loop = asyncio.get_running_loop()
@@ -72,6 +74,8 @@ class StatisticsCleaner:
             threshold,
             window_hours,
             database_path,
+            start_at,
+            end_at,
         )
         return result
 
@@ -97,9 +101,17 @@ class StatisticsCleaner:
         threshold: float,
         window_hours: int,
         database_path: Path,
+        start_at: datetime | None,
+        end_at: datetime | None,
     ) -> ScanResult:
         database_path = self._validate_database_path(database_path)
-        rows = self._load_rows(database_path=database_path, entity_id=entity_id, window_hours=window_hours)
+        rows = self._load_rows(
+            database_path=database_path,
+            entity_id=entity_id,
+            window_hours=window_hours,
+            start_at=start_at,
+            end_at=end_at,
+        )
 
         grouped_rows: dict[tuple[str, str], list[_StatisticRow]] = defaultdict(list)
         for row in rows:
@@ -129,6 +141,8 @@ class StatisticsCleaner:
                 "threshold": threshold,
                 "window_hours": window_hours,
                 "database_path": str(database_path),
+                "start_at": start_at.isoformat() if start_at else None,
+                "end_at": end_at.isoformat() if end_at else None,
                 "created_at": datetime.now(tz=UTC).isoformat(),
                 "candidates": [asdict(candidate) for candidate in candidates],
             },
@@ -287,14 +301,30 @@ class StatisticsCleaner:
 
         return len(candidates)
 
-    def _load_rows(self, *, database_path: Path, entity_id: str, window_hours: int) -> list[_StatisticRow]:
+    def _load_rows(
+        self,
+        *,
+        database_path: Path,
+        entity_id: str,
+        window_hours: int,
+        start_at: datetime | None,
+        end_at: datetime | None,
+    ) -> list[_StatisticRow]:
         metadata_ids = self._load_metadata_ids(database_path=database_path, entity_id=entity_id)
         if not metadata_ids:
             raise HomeAssistantError(
                 f"No statistics metadata found for entity '{entity_id}' in {database_path}"
             )
 
-        min_start_ts = (datetime.now(tz=UTC) - timedelta(hours=window_hours)).timestamp()
+        if start_at is None:
+            start_at = datetime.now(tz=UTC) - timedelta(hours=window_hours)
+        if end_at is None:
+            end_at = datetime.now(tz=UTC)
+        if start_at > end_at:
+            raise HomeAssistantError("start_at must be before end_at.")
+
+        min_start_ts = start_at.timestamp()
+        max_start_ts = end_at.timestamp()
         rows: list[_StatisticRow] = []
         connection = sqlite3.connect(database_path)
         connection.row_factory = sqlite3.Row
@@ -308,9 +338,10 @@ class StatisticsCleaner:
                         f"FROM {table} "
                         f"WHERE metadata_id IN ({placeholders}) "
                         "AND COALESCE(start_ts, 0) >= ? "
+                        "AND COALESCE(start_ts, 0) <= ? "
                         "ORDER BY COALESCE(start_ts, 0) ASC, id ASC"
                     ),
-                    [*metadata_ids, min_start_ts],
+                    [*metadata_ids, min_start_ts, max_start_ts],
                 )
                 for row in cursor.fetchall():
                     target_column, value = self._pick_target_column(row)
