@@ -10,6 +10,7 @@ from collections import defaultdict
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from statistics import median
 
 from homeassistant.exceptions import HomeAssistantError
 
@@ -21,6 +22,8 @@ _MAX_SUM_SEGMENT_LENGTHS = {
     "statistics": 12,
     "statistics_short_term": 24,
 }
+_SUM_HISTORY_WINDOW = 6
+_SUM_CONFIRMATION_WINDOW = 3
 
 
 @dataclass(slots=True)
@@ -173,21 +176,13 @@ class StatisticsCleaner:
                 jump_delta=jump_delta,
                 threshold=threshold,
             )
-            if exit_index is None:
-                index += 1
-                continue
-
-            for segment_index in range(index, exit_index):
-                row = rows[segment_index]
-                corrected_value = row.value - jump_delta
-                candidates.append(
-                    OutlierCandidate(
-                        row_id=row.row_id,
-                        table=row.table,
-                        target_column=row.target_column,
-                        timestamp=row.start or self._format_timestamp(row.start_ts),
-                        original_value=row.value,
-                        suggested_value=corrected_value,
+            if exit_index is not None:
+                candidates.extend(
+                    self._build_sum_segment_candidates(
+                        rows=rows,
+                        start_index=index,
+                        end_index=exit_index,
+                        offset=jump_delta,
                         reason=(
                             f"sum level shift of {jump_delta:.3f} detected between "
                             f"{rows[index - 1].start or self._format_timestamp(rows[index - 1].start_ts)} "
@@ -195,9 +190,107 @@ class StatisticsCleaner:
                         ),
                     )
                 )
+                index = exit_index + 1
+                continue
 
-            index = exit_index + 1
+            baseline_delta = self._baseline_sum_delta(rows=rows, index=index)
+            if baseline_delta is None:
+                index += 1
+                continue
 
+            offset = jump_delta - baseline_delta
+            if abs(offset) <= threshold:
+                index += 1
+                continue
+
+            if not self._is_persistent_sum_shift(
+                rows=rows,
+                start_index=index,
+                baseline_delta=baseline_delta,
+                threshold=threshold,
+            ):
+                index += 1
+                continue
+
+            candidates.extend(
+                self._build_sum_segment_candidates(
+                    rows=rows,
+                    start_index=index,
+                    end_index=len(rows),
+                    offset=offset,
+                    reason=(
+                        f"persistent sum shift of {offset:.3f} detected from "
+                        f"{rows[index].start or self._format_timestamp(rows[index].start_ts)} onward"
+                    ),
+                )
+            )
+            break
+
+        return candidates
+
+    def _baseline_sum_delta(
+        self,
+        *,
+        rows: list[_StatisticRow],
+        index: int,
+    ) -> float | None:
+        """Estimate the local expected increment before a suspected jump."""
+        start_index = max(1, index - _SUM_HISTORY_WINDOW)
+        deltas = [
+            rows[position].value - rows[position - 1].value
+            for position in range(start_index, index)
+        ]
+        if len(deltas) < 2:
+            return None
+        return float(median(deltas))
+
+    def _is_persistent_sum_shift(
+        self,
+        *,
+        rows: list[_StatisticRow],
+        start_index: int,
+        baseline_delta: float,
+        threshold: float,
+    ) -> bool:
+        """Check whether post-jump values continue with a normal slope but shifted level."""
+        confirmation_end = min(len(rows), start_index + 1 + _SUM_CONFIRMATION_WINDOW)
+        if confirmation_end <= start_index + 1:
+            return False
+
+        tolerance = max(threshold, abs(baseline_delta) * 0.5, 0.2)
+        matching_steps = 0
+        for index in range(start_index + 1, confirmation_end):
+            delta = rows[index].value - rows[index - 1].value
+            if abs(delta - baseline_delta) <= tolerance:
+                matching_steps += 1
+
+        required_matches = max(1, confirmation_end - start_index - 2)
+        return matching_steps >= required_matches
+
+    def _build_sum_segment_candidates(
+        self,
+        *,
+        rows: list[_StatisticRow],
+        start_index: int,
+        end_index: int,
+        offset: float,
+        reason: str,
+    ) -> list[OutlierCandidate]:
+        """Build candidate rows for a detected sum offset segment."""
+        candidates: list[OutlierCandidate] = []
+        for segment_index in range(start_index, end_index):
+            row = rows[segment_index]
+            candidates.append(
+                OutlierCandidate(
+                    row_id=row.row_id,
+                    table=row.table,
+                    target_column=row.target_column,
+                    timestamp=row.start or self._format_timestamp(row.start_ts),
+                    original_value=row.value,
+                    suggested_value=row.value - offset,
+                    reason=reason,
+                )
+            )
         return candidates
 
     def _find_matching_sum_exit(
