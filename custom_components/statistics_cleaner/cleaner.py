@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import sqlite3
+from collections import defaultdict
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -16,6 +17,7 @@ from .models import OutlierCandidate, ScanResult
 
 _LOGGER = logging.getLogger(__name__)
 _SUPPORTED_TABLES = ("statistics", "statistics_short_term")
+_MAX_SUM_SEGMENT_LENGTH = 24
 
 
 @dataclass(slots=True)
@@ -96,38 +98,19 @@ class StatisticsCleaner:
         database_path = self._validate_database_path(database_path)
         rows = self._load_rows(database_path=database_path, entity_id=entity_id, window_hours=window_hours)
 
+        grouped_rows: dict[tuple[str, str], list[_StatisticRow]] = defaultdict(list)
+        for row in rows:
+            grouped_rows[(row.table, row.target_column)].append(row)
+
         candidates: list[OutlierCandidate] = []
-        for index in range(1, len(rows) - 1):
-            previous_row = rows[index - 1]
-            current_row = rows[index]
-            next_row = rows[index + 1]
-
-            if (
-                previous_row.target_column != current_row.target_column
-                or next_row.target_column != current_row.target_column
-            ):
+        for (table, target_column), group in grouped_rows.items():
+            if target_column == "sum":
+                candidates.extend(self._find_sum_candidates(group, threshold))
                 continue
 
-            suggested_value = (previous_row.value + next_row.value) / 2
-            delta = abs(current_row.value - suggested_value)
-            if delta <= threshold:
-                continue
+            candidates.extend(self._find_point_candidates(group, threshold))
 
-            timestamp = current_row.start or self._format_timestamp(current_row.start_ts)
-            candidates.append(
-                OutlierCandidate(
-                    row_id=current_row.row_id,
-                    table=current_row.table,
-                    target_column=current_row.target_column,
-                    timestamp=timestamp,
-                    original_value=current_row.value,
-                    suggested_value=suggested_value,
-                    reason=(
-                        f"{current_row.target_column} deviates by {delta:.3f} from the "
-                        "neighbour average"
-                    ),
-                )
-            )
+        candidates.sort(key=lambda item: (item.timestamp, item.table, item.row_id))
 
         result = ScanResult(
             entity_id=entity_id,
@@ -148,6 +131,112 @@ class StatisticsCleaner:
             },
         )
         return result
+
+    def _find_sum_candidates(
+        self,
+        rows: list[_StatisticRow],
+        threshold: float,
+    ) -> list[OutlierCandidate]:
+        """Find anomalous level-shift segments in cumulative sum rows."""
+        candidates: list[OutlierCandidate] = []
+        index = 1
+
+        while index < len(rows):
+            jump_delta = rows[index].value - rows[index - 1].value
+            if abs(jump_delta) <= threshold:
+                index += 1
+                continue
+
+            exit_index = self._find_matching_sum_exit(
+                rows=rows,
+                start_index=index,
+                jump_delta=jump_delta,
+                threshold=threshold,
+            )
+            if exit_index is None:
+                index += 1
+                continue
+
+            for segment_index in range(index, exit_index):
+                row = rows[segment_index]
+                corrected_value = row.value - jump_delta
+                candidates.append(
+                    OutlierCandidate(
+                        row_id=row.row_id,
+                        table=row.table,
+                        target_column=row.target_column,
+                        timestamp=row.start or self._format_timestamp(row.start_ts),
+                        original_value=row.value,
+                        suggested_value=corrected_value,
+                        reason=(
+                            f"sum level shift of {jump_delta:.3f} detected between "
+                            f"{rows[index - 1].start or self._format_timestamp(rows[index - 1].start_ts)} "
+                            f"and {rows[exit_index].start or self._format_timestamp(rows[exit_index].start_ts)}"
+                        ),
+                    )
+                )
+
+            index = exit_index + 1
+
+        return candidates
+
+    def _find_matching_sum_exit(
+        self,
+        *,
+        rows: list[_StatisticRow],
+        start_index: int,
+        jump_delta: float,
+        threshold: float,
+    ) -> int | None:
+        """Find the matching opposite jump that closes a sum offset segment."""
+        max_index = min(len(rows), start_index + _MAX_SUM_SEGMENT_LENGTH + 1)
+        tolerance = max(threshold, abs(jump_delta) * 0.15)
+
+        for index in range(start_index + 1, max_index):
+            exit_delta = rows[index].value - rows[index - 1].value
+            if jump_delta == 0:
+                continue
+            if exit_delta == 0 or (jump_delta > 0) == (exit_delta > 0):
+                continue
+            if abs(jump_delta + exit_delta) > tolerance:
+                continue
+            return index
+
+        return None
+
+    def _find_point_candidates(
+        self,
+        rows: list[_StatisticRow],
+        threshold: float,
+    ) -> list[OutlierCandidate]:
+        """Find isolated point anomalies for non-cumulative statistics."""
+        candidates: list[OutlierCandidate] = []
+        for index in range(1, len(rows) - 1):
+            previous_row = rows[index - 1]
+            current_row = rows[index]
+            next_row = rows[index + 1]
+
+            suggested_value = (previous_row.value + next_row.value) / 2
+            delta = abs(current_row.value - suggested_value)
+            if delta <= threshold:
+                continue
+
+            candidates.append(
+                OutlierCandidate(
+                    row_id=current_row.row_id,
+                    table=current_row.table,
+                    target_column=current_row.target_column,
+                    timestamp=current_row.start or self._format_timestamp(current_row.start_ts),
+                    original_value=current_row.value,
+                    suggested_value=suggested_value,
+                    reason=(
+                        f"{current_row.target_column} deviates by {delta:.3f} from the "
+                        "neighbour average"
+                    ),
+                )
+            )
+
+        return candidates
 
     def _apply_preview_sync(self, entry_id: str) -> int:
         preview = self._load_preview(entry_id=entry_id)
