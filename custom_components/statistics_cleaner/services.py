@@ -40,7 +40,12 @@ SCAN_SCHEMA = vol.Schema(
     }
 )
 
-APPLY_SCHEMA = vol.Schema({vol.Required(ATTR_ENTRY_ID): cv.string})
+APPLY_SCHEMA = vol.Schema(
+    {
+        vol.Optional(ATTR_ENTRY_ID): cv.string,
+        vol.Optional(CONF_ENTITY_ID): cv.entity_id,
+    }
+)
 
 
 async def async_register_services(hass: HomeAssistant) -> None:
@@ -93,7 +98,11 @@ async def async_register_services(hass: HomeAssistant) -> None:
         return {ATTR_SCAN_RESULT: result.as_dict()}
 
     async def handle_apply(call: ServiceCall) -> ServiceResponse:
-        entry = _resolve_entry(hass, call.data[ATTR_ENTRY_ID])
+        entry = _resolve_entry(
+            hass,
+            call.data.get(ATTR_ENTRY_ID),
+            call.data.get(CONF_ENTITY_ID),
+        )
         result = await cleaner.apply_preview(entry_id=entry.entry_id)
         _LOGGER.info(
             "Apply preview requested for %s, created backup at %s",
@@ -122,18 +131,39 @@ async def async_register_services(hass: HomeAssistant) -> None:
     )
 
 
-def _resolve_entry(hass: HomeAssistant, entry_id: str | None):
+def _resolve_entry(
+    hass: HomeAssistant,
+    entry_id: str | None,
+    entity_id: str | None = None,
+):
     """Resolve a config entry for the integration."""
     entries = hass.config_entries.async_entries(DOMAIN)
     if not entries:
         raise HomeAssistantError("No Statistics Cleaner config entries are available.")
 
-    if entry_id is None:
+    if entry_id is None and entity_id is None:
         return entries[0]
 
-    for entry in entries:
-        if entry.entry_id == entry_id:
-            return entry
+    if entry_id is not None:
+        for entry in entries:
+            if entry.entry_id == entry_id:
+                return entry
+
+    if entity_id is not None:
+        matching_entries = [
+            entry
+            for entry in entries
+            if entry.options.get(CONF_ENTITY_ID) == entity_id
+            or entry.data.get(CONF_ENTITY_ID) == entity_id
+        ]
+        if len(matching_entries) == 1:
+            return matching_entries[0]
+        if len(matching_entries) > 1:
+            raise ServiceValidationError(
+                f"Multiple config entries found for entity_id: {entity_id}. "
+                "Use entry_id explicitly."
+            )
+        raise ServiceValidationError(f"Unknown entity_id: {entity_id}")
 
     raise ServiceValidationError(f"Unknown entry_id: {entry_id}")
 

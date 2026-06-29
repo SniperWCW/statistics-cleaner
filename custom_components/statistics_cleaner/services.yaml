@@ -49,8 +49,13 @@ apply_preview:
   fields:
     entry_id:
       name: Entry ID
-      description: Config entry id to operate on.
-      required: true
+      description: Optional config entry id to operate on.
       example: "01J123456789ABCDEFGHJK"
       selector:
         text:
+    entity_id:
+      name: Entity
+      description: Optional entity id to resolve the matching config entry.
+      selector:
+        entity:
+          domain: sensor
