@@ -1,0 +1,17 @@
+{
+  "domain": "statistics_cleaner",
+  "name": "Statistics Cleaner",
+  "codeowners": [
+    "@SniperWCW"
+  ],
+  "config_flow": true,
+  "documentation": "https://github.com/SniperWCW/statistics-cleaner",
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/SniperWCW/statistics-cleaner/issues",
+  "loggers": [
+    "custom_components.statistics_cleaner"
+  ],
+  "requirements": [],
+  "version": "0.1.0"
+}

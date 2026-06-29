@@ -1,0 +1,29 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Statistics Cleaner",
+        "description": "Configure a statistics entity and outlier threshold.",
+        "data": {
+          "name": "Name",
+          "entity_id": "Entity",
+          "db_path": "SQLite database path",
+          "threshold": "Threshold",
+          "window_hours": "Time window (hours)"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Statistics Cleaner options",
+        "data": {
+          "db_path": "SQLite database path",
+          "threshold": "Threshold",
+          "window_hours": "Time window (hours)"
+        }
+      }
+    }
+  }
+}

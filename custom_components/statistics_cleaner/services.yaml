@@ -1,0 +1,56 @@
+scan_outliers:
+  name: Scan outliers
+  description: Scan the configured entity for suspicious statistics points.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: Optional config entry id. If omitted, the first configured entry is used.
+      example: "01J123456789ABCDEFGHJK"
+      selector:
+        text:
+    entity_id:
+      name: Entity
+      description: Optional override for the entity configured in the entry.
+      selector:
+        entity:
+          domain: sensor
+    db_path:
+      name: SQLite database path
+      description: Optional override for the Home Assistant recorder SQLite file.
+      example: "/config/home-assistant_v2.db"
+      selector:
+        text:
+    threshold:
+      name: Threshold
+      description: Maximum allowed delta before a value is flagged as suspicious.
+      example: 0.15
+      default: 0.15
+      selector:
+        number:
+          min: 0
+          max: 1000
+          step: 0.01
+          mode: box
+    window_hours:
+      name: Time window
+      description: Time range to inspect, in hours.
+      example: 24
+      default: 24
+      selector:
+        number:
+          min: 1
+          max: 8760
+          step: 1
+          mode: box
+
+apply_preview:
+  name: Apply preview
+  description: Create a backup and apply all approved changes from the last preview run.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: Config entry id to operate on.
+      required: true
+      example: "01J123456789ABCDEFGHJK"
+      selector:
+        text:

@@ -1,0 +1,7 @@
+{
+  "name": "Statistics Cleaner",
+  "country": "DE",
+  "homeassistant": "2025.1.0",
+  "render_readme": true,
+  "content_in_root": false
+}
