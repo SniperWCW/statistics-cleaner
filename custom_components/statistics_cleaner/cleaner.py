@@ -131,6 +131,9 @@ class StatisticsCleaner:
             entity_id=entity_id,
             threshold=threshold,
             window_hours=window_hours,
+            start_at=start_at.isoformat() if start_at else None,
+            end_at=end_at.isoformat() if end_at else None,
+            scanned_rows=len(rows),
             candidates=candidates,
         )
         self._save_preview(

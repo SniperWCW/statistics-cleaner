@@ -26,6 +26,9 @@ class ScanResult:
     entity_id: str
     threshold: float
     window_hours: int
+    start_at: str | None = None
+    end_at: str | None = None
+    scanned_rows: int = 0
     candidates: list[OutlierCandidate] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
@@ -34,6 +37,9 @@ class ScanResult:
             "entity_id": self.entity_id,
             "threshold": self.threshold,
             "window_hours": self.window_hours,
+            "start_at": self.start_at,
+            "end_at": self.end_at,
+            "scanned_rows": self.scanned_rows,
             "candidates": [
                 {
                     "row_id": item.row_id,
