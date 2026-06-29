@@ -18,8 +18,8 @@ from .models import OutlierCandidate, ScanResult
 _LOGGER = logging.getLogger(__name__)
 _SUPPORTED_TABLES = ("statistics", "statistics_short_term")
 _MAX_SUM_SEGMENT_LENGTHS = {
-    "statistics": 24 * 14,
-    "statistics_short_term": 12 * 24 * 14,
+    "statistics": 12,
+    "statistics_short_term": 24,
 }
 
 
@@ -210,7 +210,7 @@ class StatisticsCleaner:
                 continue
 
             segment_length = index - start_index
-            score = (mismatch, -segment_length)
+            score = (mismatch, segment_length)
             if best_score is None or score < best_score:
                 best_index = index
                 best_score = score
