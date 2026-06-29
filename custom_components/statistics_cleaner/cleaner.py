@@ -17,7 +17,10 @@ from .models import OutlierCandidate, ScanResult
 
 _LOGGER = logging.getLogger(__name__)
 _SUPPORTED_TABLES = ("statistics", "statistics_short_term")
-_MAX_SUM_SEGMENT_LENGTH = 24
+_MAX_SUM_SEGMENT_LENGTHS = {
+    "statistics": 24 * 14,
+    "statistics_short_term": 12 * 24 * 14,
+}
 
 
 @dataclass(slots=True)
@@ -189,8 +192,12 @@ class StatisticsCleaner:
         threshold: float,
     ) -> int | None:
         """Find the matching opposite jump that closes a sum offset segment."""
-        max_index = min(len(rows), start_index + _MAX_SUM_SEGMENT_LENGTH + 1)
+        row = rows[start_index]
+        max_segment_length = _MAX_SUM_SEGMENT_LENGTHS.get(row.table, 24 * 14)
+        max_index = min(len(rows), start_index + max_segment_length + 1)
         tolerance = max(threshold, abs(jump_delta) * 0.15)
+        best_index: int | None = None
+        best_score: tuple[float, int] | None = None
 
         for index in range(start_index + 1, max_index):
             exit_delta = rows[index].value - rows[index - 1].value
@@ -198,11 +205,17 @@ class StatisticsCleaner:
                 continue
             if exit_delta == 0 or (jump_delta > 0) == (exit_delta > 0):
                 continue
-            if abs(jump_delta + exit_delta) > tolerance:
+            mismatch = abs(jump_delta + exit_delta)
+            if mismatch > tolerance:
                 continue
-            return index
 
-        return None
+            segment_length = index - start_index
+            score = (mismatch, -segment_length)
+            if best_score is None or score < best_score:
+                best_index = index
+                best_score = score
+
+        return best_index
 
     def _find_point_candidates(
         self,
