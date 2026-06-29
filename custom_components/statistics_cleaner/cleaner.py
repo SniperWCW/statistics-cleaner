@@ -161,7 +161,8 @@ class StatisticsCleaner:
         threshold: float,
     ) -> list[OutlierCandidate]:
         """Find anomalous level-shift segments in cumulative sum rows."""
-        candidates: list[OutlierCandidate] = []
+        original_values = {row.row_id: row.value for row in rows}
+        candidate_map: dict[int, OutlierCandidate] = {}
         index = 1
 
         while index < len(rows):
@@ -177,56 +178,113 @@ class StatisticsCleaner:
                 threshold=threshold,
             )
             if exit_index is not None:
-                candidates.extend(
-                    self._build_sum_segment_candidates(
-                        rows=rows,
-                        start_index=index,
-                        end_index=exit_index,
-                        offset=jump_delta,
-                        reason=(
-                            f"sum level shift of {jump_delta:.3f} detected between "
-                            f"{rows[index - 1].start or self._format_timestamp(rows[index - 1].start_ts)} "
-                            f"and {rows[exit_index].start or self._format_timestamp(rows[exit_index].start_ts)}"
-                        ),
-                    )
-                )
-                index = exit_index + 1
-                continue
-
-            baseline_delta = self._baseline_sum_delta(rows=rows, index=index)
-            if baseline_delta is None:
-                index += 1
-                continue
-
-            offset = jump_delta - baseline_delta
-            if abs(offset) <= threshold:
-                index += 1
-                continue
-
-            if not self._is_persistent_sum_shift(
-                rows=rows,
-                start_index=index,
-                baseline_delta=baseline_delta,
-                threshold=threshold,
-            ):
-                index += 1
-                continue
-
-            candidates.extend(
-                self._build_sum_segment_candidates(
+                self._apply_sum_offset(
                     rows=rows,
+                    original_values=original_values,
+                    candidate_map=candidate_map,
                     start_index=index,
-                    end_index=len(rows),
-                    offset=offset,
+                    end_index=exit_index,
+                    offset=jump_delta,
                     reason=(
-                        f"persistent sum shift of {offset:.3f} detected from "
-                        f"{rows[index].start or self._format_timestamp(rows[index].start_ts)} onward"
+                        f"sum level shift of {jump_delta:.3f} detected between "
+                        f"{rows[index - 1].start or self._format_timestamp(rows[index - 1].start_ts)} "
+                        f"and {rows[exit_index].start or self._format_timestamp(rows[exit_index].start_ts)}"
                     ),
                 )
-            )
-            break
+                index += 1
+                continue
 
-        return candidates
+            offset = self._estimate_persistent_sum_offset(
+                rows=rows,
+                start_index=index,
+                threshold=threshold,
+            )
+            if offset is None:
+                index += 1
+                continue
+
+            self._apply_sum_offset(
+                rows=rows,
+                original_values=original_values,
+                candidate_map=candidate_map,
+                start_index=index,
+                end_index=len(rows),
+                offset=offset,
+                reason=(
+                    f"persistent sum shift of {offset:.3f} detected from "
+                    f"{rows[index].start or self._format_timestamp(rows[index].start_ts)} onward"
+                ),
+            )
+            index += 1
+
+        return sorted(candidate_map.values(), key=lambda item: (item.timestamp, item.row_id))
+
+    def _estimate_persistent_sum_offset(
+        self,
+        *,
+        rows: list[_StatisticRow],
+        start_index: int,
+        threshold: float,
+    ) -> float | None:
+        """Estimate a persistent offset using pre-jump slope and early post-jump levels."""
+        baseline_delta = self._baseline_sum_delta(rows=rows, index=start_index)
+        if baseline_delta is None:
+            return None
+
+        if not self._is_persistent_sum_shift(
+            rows=rows,
+            start_index=start_index,
+            baseline_delta=baseline_delta,
+            threshold=threshold,
+        ):
+            return None
+
+        anchor_value = rows[start_index - 1].value
+        confirmation_end = min(len(rows), start_index + 1 + _SUM_CONFIRMATION_WINDOW)
+        offsets = []
+        for index in range(start_index, confirmation_end):
+            expected_value = anchor_value + baseline_delta * (index - start_index + 1)
+            offsets.append(rows[index].value - expected_value)
+
+        if not offsets:
+            return None
+
+        offset = float(median(offsets))
+        if abs(offset) <= threshold:
+            return None
+        return offset
+
+    def _apply_sum_offset(
+        self,
+        *,
+        rows: list[_StatisticRow],
+        original_values: dict[int, float],
+        candidate_map: dict[int, OutlierCandidate],
+        start_index: int,
+        end_index: int,
+        offset: float,
+        reason: str,
+    ) -> None:
+        """Apply an offset to the working rows and accumulate preview candidates."""
+        for segment_index in range(start_index, end_index):
+            row = rows[segment_index]
+            row.value -= offset
+
+            if row.row_id in candidate_map:
+                candidate = candidate_map[row.row_id]
+                candidate.suggested_value -= offset
+                candidate.reason = f"{candidate.reason}; {reason}"
+                continue
+
+            candidate_map[row.row_id] = OutlierCandidate(
+                row_id=row.row_id,
+                table=row.table,
+                target_column=row.target_column,
+                timestamp=row.start or self._format_timestamp(row.start_ts),
+                original_value=original_values[row.row_id],
+                suggested_value=original_values[row.row_id] - offset,
+                reason=reason,
+            )
 
     def _baseline_sum_delta(
         self,
@@ -266,32 +324,6 @@ class StatisticsCleaner:
 
         required_matches = max(1, confirmation_end - start_index - 2)
         return matching_steps >= required_matches
-
-    def _build_sum_segment_candidates(
-        self,
-        *,
-        rows: list[_StatisticRow],
-        start_index: int,
-        end_index: int,
-        offset: float,
-        reason: str,
-    ) -> list[OutlierCandidate]:
-        """Build candidate rows for a detected sum offset segment."""
-        candidates: list[OutlierCandidate] = []
-        for segment_index in range(start_index, end_index):
-            row = rows[segment_index]
-            candidates.append(
-                OutlierCandidate(
-                    row_id=row.row_id,
-                    table=row.table,
-                    target_column=row.target_column,
-                    timestamp=row.start or self._format_timestamp(row.start_ts),
-                    original_value=row.value,
-                    suggested_value=row.value - offset,
-                    reason=reason,
-                )
-            )
-        return candidates
 
     def _find_matching_sum_exit(
         self,
