@@ -12,7 +12,11 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from statistics import median
 
-from homeassistant.exceptions import HomeAssistantError
+try:
+    from homeassistant.exceptions import HomeAssistantError
+except ImportError:
+    class HomeAssistantError(Exception):
+        """Fallback error used when Home Assistant is not installed."""
 
 from .models import OutlierCandidate, ScanResult
 
@@ -24,6 +28,10 @@ _MAX_SUM_SEGMENT_LENGTHS = {
 }
 _SUM_HISTORY_WINDOW = 6
 _SUM_CONFIRMATION_WINDOW = 3
+_MAX_POINT_SEGMENT_LENGTHS = {
+    "statistics": 12,
+    "statistics_short_term": 24,
+}
 
 
 @dataclass(slots=True)
@@ -364,34 +372,196 @@ class StatisticsCleaner:
         rows: list[_StatisticRow],
         threshold: float,
     ) -> list[OutlierCandidate]:
-        """Find isolated point anomalies for non-cumulative statistics."""
+        """Find isolated and short multi-point anomalies for non-cumulative statistics."""
         candidates: list[OutlierCandidate] = []
-        for index in range(1, len(rows) - 1):
-            previous_row = rows[index - 1]
-            current_row = rows[index]
-            next_row = rows[index + 1]
-
-            suggested_value = (previous_row.value + next_row.value) / 2
-            delta = abs(current_row.value - suggested_value)
-            if delta <= threshold:
+        index = 1
+        while index < len(rows) - 1:
+            segment_end = self._find_point_segment_end(
+                rows=rows,
+                start_index=index,
+                threshold=threshold,
+            )
+            if segment_end is None:
+                index += 1
                 continue
 
-            candidates.append(
-                OutlierCandidate(
-                    row_id=current_row.row_id,
-                    table=current_row.table,
-                    target_column=current_row.target_column,
-                    timestamp=current_row.start or self._format_timestamp(current_row.start_ts),
-                    original_value=current_row.value,
-                    suggested_value=suggested_value,
-                    reason=(
+            previous_row = rows[index - 1]
+            next_row = rows[segment_end + 1]
+            span = segment_end - index + 2
+
+            for position in range(index, segment_end + 1):
+                current_row = rows[position]
+                distance = position - index + 1
+                suggested_value = previous_row.value + (
+                    (next_row.value - previous_row.value) * distance / span
+                )
+                delta = abs(current_row.value - suggested_value)
+
+                if segment_end == index:
+                    reason = (
                         f"{current_row.target_column} deviates by {delta:.3f} from the "
                         "neighbour average"
-                    ),
+                    )
+                else:
+                    reason = (
+                        f"{current_row.target_column} is part of a {segment_end - index + 1}-point "
+                        f"outlier segment and deviates by {delta:.3f} from the interpolated trend"
+                    )
+
+                candidates.append(
+                    OutlierCandidate(
+                        row_id=current_row.row_id,
+                        table=current_row.table,
+                        target_column=current_row.target_column,
+                        timestamp=current_row.start
+                        or self._format_timestamp(current_row.start_ts),
+                        original_value=current_row.value,
+                        suggested_value=suggested_value,
+                        reason=reason,
+                    )
                 )
-            )
+
+            index = segment_end + 1
 
         return candidates
+
+    def _find_point_segment_end(
+        self,
+        *,
+        rows: list[_StatisticRow],
+        start_index: int,
+        threshold: float,
+    ) -> int | None:
+        """Return the last index of an anomalous point segment if one is found."""
+        max_length = _MAX_POINT_SEGMENT_LENGTHS.get(rows[start_index].table, 24)
+        max_end = min(len(rows) - 1, start_index + max_length)
+        best_end: int | None = None
+        best_score: tuple[int, float] | None = None
+
+        for segment_end in range(start_index, max_end):
+            next_anchor_index = segment_end + 1
+            if next_anchor_index >= len(rows):
+                break
+
+            deviations = self._segment_deviations(
+                rows=rows,
+                start_index=start_index,
+                segment_end=segment_end,
+            )
+            if not deviations:
+                continue
+
+            max_deviation = max(deviations)
+            if max_deviation <= threshold:
+                continue
+
+            if not self._segment_has_stable_anchors(
+                rows=rows,
+                start_index=start_index,
+                segment_end=segment_end,
+                threshold=threshold,
+            ):
+                continue
+
+            if not self._segment_has_discontinuous_edges(
+                rows=rows,
+                start_index=start_index,
+                segment_end=segment_end,
+                threshold=threshold,
+            ):
+                continue
+
+            if not self._segment_needs_correction(
+                deviations=deviations,
+                threshold=threshold,
+                segment_length=segment_end - start_index + 1,
+            ):
+                continue
+
+            score = (segment_end - start_index + 1, max_deviation)
+            if best_score is None or score < best_score:
+                best_end = segment_end
+                best_score = score
+
+        return best_end
+
+    def _segment_deviations(
+        self,
+        *,
+        rows: list[_StatisticRow],
+        start_index: int,
+        segment_end: int,
+    ) -> list[float]:
+        """Measure row deviations from a line between the outer anchor points."""
+        previous_row = rows[start_index - 1]
+        next_row = rows[segment_end + 1]
+        span = segment_end - start_index + 2
+        deviations: list[float] = []
+
+        for position in range(start_index, segment_end + 1):
+            distance = position - start_index + 1
+            expected_value = previous_row.value + (
+                (next_row.value - previous_row.value) * distance / span
+            )
+            deviations.append(abs(rows[position].value - expected_value))
+
+        return deviations
+
+    def _segment_has_stable_anchors(
+        self,
+        *,
+        rows: list[_StatisticRow],
+        start_index: int,
+        segment_end: int,
+        threshold: float,
+    ) -> bool:
+        """Check that values before and after the segment follow a compatible trend."""
+        previous_row = rows[start_index - 1]
+        next_row = rows[segment_end + 1]
+        anchor_delta = abs(next_row.value - previous_row.value)
+
+        if start_index == 1 and segment_end + 2 >= len(rows):
+            return True
+
+        left_ok = True
+        if start_index >= 2:
+            left_delta = abs(previous_row.value - rows[start_index - 2].value)
+            left_ok = anchor_delta <= max(threshold * 1.5, left_delta * 3, 0.5)
+
+        right_ok = True
+        if segment_end + 2 < len(rows):
+            right_delta = abs(rows[segment_end + 2].value - next_row.value)
+            right_ok = anchor_delta <= max(threshold * 1.5, right_delta * 3, 0.5)
+
+        return left_ok and right_ok
+
+    def _segment_has_discontinuous_edges(
+        self,
+        *,
+        rows: list[_StatisticRow],
+        start_index: int,
+        segment_end: int,
+        threshold: float,
+    ) -> bool:
+        """Require a clear jump at both boundaries of a proposed segment."""
+        left_jump = abs(rows[start_index].value - rows[start_index - 1].value)
+        right_jump = abs(rows[segment_end].value - rows[segment_end + 1].value)
+        return left_jump > threshold and right_jump > threshold
+
+    def _segment_needs_correction(
+        self,
+        *,
+        deviations: list[float],
+        threshold: float,
+        segment_length: int,
+    ) -> bool:
+        """Require strong enough deviation to avoid changing ordinary noise."""
+        if segment_length == 1:
+            return deviations[0] > threshold
+
+        average_deviation = sum(deviations) / len(deviations)
+        significant_points = sum(1 for item in deviations if item > threshold)
+        return average_deviation > threshold and significant_points >= max(2, segment_length // 2)
 
     def _apply_preview_sync(self, entry_id: str) -> int:
         preview = self._load_preview(entry_id=entry_id)

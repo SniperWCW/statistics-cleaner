@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from typing import Any
+
+try:
+    from homeassistant.config_entries import ConfigEntry
+    from homeassistant.core import HomeAssistant
+except ImportError:
+    ConfigEntry = Any
+    HomeAssistant = Any
 
 from .const import DOMAIN
-from .services import async_register_services
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Set up the integration."""
+    from .services import async_register_services
+
     hass.data.setdefault(DOMAIN, {})
     await async_register_services(hass)
     return True

@@ -2,6 +2,8 @@
 
 `Statistics Cleaner` is a Home Assistant custom integration for reviewing and correcting outliers in recorder statistics, starting with direct local SQLite recorder database support.
 
+It now also includes a direct local CLI so statistics can be scanned and corrected in bulk without going through the Home Assistant "Adjust statistic" dialog for one value at a time.
+
 ## Status
 
 This repository now contains a working SQLite-first prototype:
@@ -13,6 +15,8 @@ This repository now contains a working SQLite-first prototype:
 - persisted previews per config entry
 - JSON backup export before writes
 - transactional apply step for suggested corrections
+- direct CLI workflow for local bulk correction without the Home Assistant UI
+- detection of short outlier segments with multiple consecutive bad values
 
 ## Planned features
 
@@ -46,9 +50,36 @@ custom_components/statistics_cleaner/
 5. Call the `statistics_cleaner.scan_outliers` service to create a preview.
 6. Review the returned candidates and then call `statistics_cleaner.apply_preview`.
 
+## Direct local CLI usage
+
+You can also work directly against the SQLite recorder database without using the Home Assistant UI:
+
+```powershell
+python statistics_cleaner_cli.py `
+  --entity-id sensor.energy_total `
+  --db-path C:\path\to\home-assistant_v2.db `
+  --start-at 2026-06-01 `
+  --end-at 2026-06-30 `
+  --threshold 0.15 `
+  --json
+```
+
+To apply all suggested corrections after the scan:
+
+```powershell
+python statistics_cleaner_cli.py `
+  --entity-id sensor.energy_total `
+  --db-path C:\path\to\home-assistant_v2.db `
+  --start-at 2026-06-01 `
+  --end-at 2026-06-30 `
+  --threshold 0.15 `
+  --apply
+```
+
+The CLI stores previews and JSON backups in `.statistics_cleaner/` by default.
+
 ## Next implementation steps
 
-1. Improve the outlier detection strategy beyond neighbour averaging.
-2. Extend writes to adjust related columns more intelligently for every statistics type.
-3. Add undo-from-backup import support.
-4. Add MariaDB support behind a dedicated adapter.
+1. Extend writes to adjust related columns more intelligently for every statistics type.
+2. Add undo-from-backup import support.
+3. Add MariaDB support behind a dedicated adapter.
